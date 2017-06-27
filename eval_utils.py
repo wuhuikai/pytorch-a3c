@@ -4,6 +4,7 @@ import time
 import math
 import visdom
 import numpy as np
+from datetime import datetime
 from collections import deque
 
 from setproctitle import setproctitle
@@ -14,21 +15,22 @@ from torch.autograd import Variable
 
 from envs import create_env
 
-def play_game(env, model, max_episode_length=math.inf, vis=None, render=False, rand=False):
+def play_game(env, model, max_episode_length=math.inf, vis=None, render=False, rand=False, gpu_id=-1):
     if vis:
         vis, window_id, fps = vis
         frame_dur = 1.0 / fps
         last_time = time.time()
 
     reward_sum, episode_length = 0, 0
-    state = env.reset()
+    state = torch.from_numpy(env.reset()).float()
+    with torch.cuda.device(gpu_id):
+        state = state.cuda() if gpu_id >= 0 else state
 
     while True:
-        _, logit = model(Variable(torch.from_numpy(state).float().unsqueeze(0), volatile=True))
+        _, logit = model(Variable(state.unsqueeze(0), volatile=True))
         prob = F.softmax(logit)
         action = prob.multinomial(1) if rand else prob.max(1)[1]
-
-        state, reward, done, _ = env.step(action.data.numpy()[0, 0])
+        raw_state, reward, done, _ = env.step(action.data.cpu().numpy()[0, 0])
         reward_sum += reward
 
         episode_length += 1
@@ -43,6 +45,8 @@ def play_game(env, model, max_episode_length=math.inf, vis=None, render=False, r
             return reward_sum, False
         if episode_length > max_episode_length:
             return reward_sum, True
+
+        state = state.copy_(torch.from_numpy(raw_state).float())
 
 def save(model, rewards, args, step):
     torch.save(model.state_dict(), os.path.join(args.model_path, 'model_iter_{}.pth'.format(step)))
@@ -60,11 +64,16 @@ def test(shared_model, global_steps, args):
     vis = visdom.Visdom(env=args.name)
 
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+  
     env = create_env(args.game_type, args.env_name, 'test', 1)
     env._max_episode_steps = None
     env.seed(args.seed)
 
     model = copy.deepcopy(shared_model)
+    gpu_id = args.gpu_ids[-1]
+    with torch.cuda.device(gpu_id):
+        model = model.cuda() if gpu_id >= 0 else model
     model.eval()
 
     stat_win, rewards_win = vis.line(X=np.zeros(1), Y=np.zeros(1)), vis.line(X=np.zeros(1), Y=np.zeros(1))
@@ -75,13 +84,13 @@ def test(shared_model, global_steps, args):
     try:
         while True:
             # Sync with the shared model
-            model.load_state_dict(shared_model.state_dict())
-
+            with torch.cuda.device(gpu_id):
+                model.load_state_dict(shared_model.state_dict())
             restart, eval_start_time, eval_start_step = False, time.time(), global_steps.value
             results = []
             for idx in range(args.n_evals):
                 model.reset()
-                reward, exceed_limit = play_game(env, model, args.max_episode_length, vis=(vis,idx,60))
+                reward, exceed_limit = play_game(env, model, args.max_episode_length, vis=(vis,idx,60), gpu_id=gpu_id)
                 if exceed_limit:
                     restart = True
                     break
@@ -140,13 +149,17 @@ def show(shared_model, global_steps, args):
     try:
         env = create_env(args.game_type, args.env_name, 'show', 1)
         model = copy.deepcopy(shared_model)
+        gpu_id = args.gpu_ids[-2]
+        with torch.cuda.device(gpu_id):
+            model = model.cuda() if gpu_id >= 0 else model
         model.eval()
         
         while True:
             # Sync with the shared model
-            model.load_state_dict(shared_model.state_dict())
+            with torch.cuda.device(gpu_id):
+                model.load_state_dict(shared_model.state_dict())
             model.reset()
-            play_game(env, model, args.max_episode_length, render=True)
+            play_game(env, model, args.max_episode_length, render=True, gpu_id=gpu_id)
             
             if global_steps.value >= args.max_global_steps:
                 break

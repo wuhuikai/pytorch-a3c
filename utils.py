@@ -23,8 +23,11 @@ def weights_init(m):
         m.weight.data.uniform_(-w_bound, w_bound)
         m.bias.data.fill_(0)
 
-def ensure_shared_grads(model, shared_model):
+def ensure_shared_grads(model, shared_model, gpu=False):
     for param, shared_param in zip(model.parameters(), shared_model.parameters()):
-        if shared_param.grad is not None:
+        if shared_param.grad is not None and not gpu:
             return
-        shared_param._grad = param.grad
+        if not gpu:
+            shared_param._grad = param.grad
+        else:
+            shared_param._grad = param.grad.clone().cpu()

@@ -13,6 +13,8 @@ def async_train(args, make_model, train):
     setproctitle('{}:main'.format(args.name))
     
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+
     env = create_env(args.game_type, args.env_name, 'main', 1)
     shared_model = make_model(env.observation_space.shape[0], env.action_space.n)
     shared_model.share_memory()
@@ -23,6 +25,7 @@ def async_train(args, make_model, train):
         optimizer = SharedAdam(shared_model.parameters(), lr=args.lr)
         optimizer.share_memory()
 
+    mp.set_start_method('spawn')
     global_steps = mp.Value('L', 0)
 
     processes = []

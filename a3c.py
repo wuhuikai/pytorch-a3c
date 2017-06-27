@@ -15,11 +15,15 @@ def train(shared_model, optimizer, rank, global_steps, args):
     setproctitle('{}:train[{}]'.format(args.name, rank))
 
     torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed(args.seed + rank)
     env = create_env(args.game_type, args.env_name, 'train:{}'.format(rank), args.remotes[rank])
     env._max_episode_steps = args.max_episode_length
     env.seed(args.seed + rank)
 
     model = copy.deepcopy(shared_model)
+    gpu_id = args.gpu_ids[rank]
+    with torch.cuda.device(gpu_id):
+        model = model.cuda() if gpu_id >= 0 else model
     model.train()
     optimizer = optimizer or optim.Adam(shared_model.parameters(), lr=args.lr)
 
@@ -27,9 +31,12 @@ def train(shared_model, optimizer, rank, global_steps, args):
     try:
         while True:
             # Sync with the shared model
-            model.load_state_dict(shared_model.state_dict())
+            with torch.cuda.device(gpu_id):
+                model.load_state_dict(shared_model.state_dict())
             if done:
-                state = torch.from_numpy(env.reset()).float()
+                with torch.cuda.device(gpu_id):
+                    state = torch.from_numpy(env.reset()).float()
+                    state = state.cuda() if gpu_id >= 0 else state
                 model.reset()
 
             values, log_probs, rewards, entropies = [], [], [], []
@@ -46,7 +53,7 @@ def train(shared_model, optimizer, rank, global_steps, args):
                 action = prob.multinomial().data
                 log_prob = log_prob.gather(1, Variable(action))
                 
-                state, reward, done, _ = env.step(action.numpy())
+                raw_state, reward, done, _ = env.step(action.cpu().numpy())
                 reward = max(min(reward, args.max_reward), args.min_reward)
 
                 values.append(value)
@@ -57,9 +64,9 @@ def train(shared_model, optimizer, rank, global_steps, args):
                 if done:
                     break
 
-                state = torch.from_numpy(state).float()
+                state = state.copy_(torch.from_numpy(raw_state).float())
 
-            R = torch.zeros(1, 1)
+            R = state.new().resize_((1, 1)).zero_()
             if not done:
                 value, _ = model(Variable(state.unsqueeze(0), volatile=True), keep_same_state=True)
                 R = value.data
@@ -67,7 +74,7 @@ def train(shared_model, optimizer, rank, global_steps, args):
             values.append(Variable(R))
             policy_loss, value_loss = 0, 0
             R = Variable(R)
-            gae = torch.zeros(1, 1)
+            gae = state.new().resize_((1, 1)).zero_()
             for i in reversed(range(len(rewards))):
                 R = args.gamma * R + rewards[i]
                 advantage = R - values[i]
@@ -78,10 +85,10 @@ def train(shared_model, optimizer, rank, global_steps, args):
                 gae = gae * args.gamma * args.tau + delta_t
                 policy_loss = policy_loss - log_probs[i] * Variable(gae) - 0.01 * entropies[i]
 
-            optimizer.zero_grad()
+            model.zero_grad()
             (policy_loss + 0.5 * value_loss).backward()
             torch.nn.utils.clip_grad_norm(model.parameters(), 40)
-            ensure_shared_grads(model, shared_model)
+            ensure_shared_grads(model, shared_model, gpu=gpu_id >= 0)
             optimizer.step()
 
             model.detach()

@@ -16,6 +16,8 @@ def main():
     parser.add_argument('--remotes', type=str, default=None, help='The address of pre-existing VNC servers and '
                         'rewarders to use [e.g. --remotes vnc://localhost:5900+15900,vnc://localhost:5901+15901] (default: None)')
 
+    parser.add_argument('--gpu_ids', default=-1, type=int, nargs='+', help='Which GPUs to use [-1 indicate CPU] (default: -1)')
+
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate (default: 0.0001)')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor for rewards (default: 0.99)')
     parser.add_argument('--tau', type=float, default=1.00, help='Parameter for GAE (default: 1.00)')
@@ -44,6 +46,7 @@ def main():
     else:
         args.remotes = args.remotes.split(',')
         assert len(args.remotes) == args.n_processes
+    args.gpu_ids = [args.gpu_ids[idx%len(args.gpu_ids)] for idx in range(args.n_processes+2)]
 
     if args.no_clip_reward:
         args.max_reward, args.min_reward = float('inf'), float('-inf')

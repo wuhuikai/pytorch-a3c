@@ -43,7 +43,8 @@ class ActorCriticLSTM(torch.nn.Module):
 
         if self.require_init:
             self.require_init = False
-            self.hx, self.cx = Variable(torch.zeros(batch, 512)), Variable(torch.zeros(batch, 512))
+            self.hx = Variable(inputs.data.new().resize_((batch, 512)).zero_())
+            self.cx = Variable(inputs.data.new().resize_((batch, 512)).zero_())
 
         x = F.relu(F.max_pool2d(self.conv1(inputs), kernel_size=2, stride=2))
         x = F.relu(F.max_pool2d(self.conv2(x), kernel_size=2, stride=2))
